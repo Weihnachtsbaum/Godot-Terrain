@@ -74,6 +74,10 @@ class_name DrawTerrainMesh extends CompositorEffect
 ## Additive light adjustment
 @export var ambient_light : Color = Color.DIM_GRAY
 
+@export_group("Fog Settings")
+
+@export var fog_color : Color = Color.GRAY
+@export_range(0.0, 0.02, 0.001, "or_greater") var fog_density : float = 0.002
 
 var transform : Transform3D
 var light : DirectionalLight3D
@@ -299,7 +303,17 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 	else:
 		light_direction = light.transform.basis.z.normalized()
 
+	var cam_pos := render_scene_data.get_cam_transform().origin
+
 	# Store all shader uniforms in a gpu data buffer, this isn't exactly the optimal data layout, each 1.0 push back is wasted space
+	buffer.push_back(cam_pos.x)
+	buffer.push_back(cam_pos.y)
+	buffer.push_back(cam_pos.z)
+	buffer.push_back(fog_density)
+	buffer.push_back(fog_color.r)
+	buffer.push_back(fog_color.g)
+	buffer.push_back(fog_color.b)
+	buffer.push_back(fog_color.a)
 	buffer.push_back(light_direction.x)
 	buffer.push_back(light_direction.y)
 	buffer.push_back(light_direction.z)
@@ -409,6 +423,9 @@ const source_vertex = "
 		// This is the uniform buffer that contains all of the settings we sent over from the cpu in _render_callback. Must match with the one in the fragment shader.
 		layout(set = 0, binding = 0, std140) uniform UniformBufferObject {
 			mat4 MVP;
+			vec3 CamPos;
+			float _FogDensity;
+			vec4 _FogColor;
 			vec3 _LightDirection;
 			float _GradientRotation;
 			float _NoiseRotation;
@@ -600,6 +617,9 @@ const source_fragment = "
 		// This is the uniform buffer that contains all of the settings we sent over from the cpu in _render_callback. Must match with the one in the vertex shader, they're technically the same thing occupying the same spot in memory this is just duplicate code required for compilation.
 		layout(set = 0, binding = 0, std140) uniform UniformBufferObject {
 			mat4 MVP;
+			vec3 CamPos;
+			float _FogDensity;
+			vec4 _FogColor;
 			vec3 _LightDirection;
 			float _GradientRotation;
 			float _NoiseRotation;
@@ -791,8 +811,12 @@ const source_fragment = "
 			// Combine lighting values, clip to prevent pixel values greater than 1 which would really really mess up the gamma correction below
 			vec4 lit = clamp(direct_light + ambient_light, vec4(0), vec4(1));
 
+			float cam_dist = distance(pos, CamPos);
+			float fog_blend = exp(-_FogDensity * cam_dist);
+			vec4 color = mix(_FogColor, lit, fog_blend);
+
 			// Convert from linear rgb to srgb for proper color output, ideally you'd do this as some final post processing effect because otherwise you will need to revert this gamma correction elsewhere
-			frag_color = pow(lit, vec4(2.2));
+			frag_color = pow(color, vec4(2.2));
 		}
 		"
 
@@ -802,6 +826,9 @@ const source_wire_fragment = "
 
 		layout(set = 0, binding = 0, std140) uniform UniformBufferObject {
 			mat4 MVP; // 64 -> 0
+			vec3 CamPos;
+			float _FogDensity;
+			vec4 _FogColor;
 			vec3 _LightDirection; // 16 -> 64
 			float _GradientRotation;
 			float _NoiseRotation; // 4 -> 80
