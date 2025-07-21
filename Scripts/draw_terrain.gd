@@ -91,7 +91,6 @@ var cached_framebuffer_format : int
 var p_render_pipeline : RID
 var p_render_pipeline_uniform_set : RID
 var p_wire_render_pipeline : RID
-var p_vertex_buffer : RID
 var vertex_format : int
 var p_index_buffer : RID
 var p_index_array : RID
@@ -100,8 +99,14 @@ var p_wire_index_array : RID
 var p_shader : RID
 var p_wire_shader : RID
 var clear_colors := PackedColorArray([Color.DARK_BLUE])
-var chunks: Dictionary[Vector2i, RID]
+var chunks: Dictionary[Vector2i, ChunkData]
 var cam_chunk := Vector2i.ZERO
+
+
+class ChunkData:
+	var vertex_buffer: RID
+	var vertex_array: RID
+
 
 func _init():
 	effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
@@ -165,7 +170,7 @@ func initialize_render(framebuffer_format : int):
 
 	vertex_format = rd.vertex_format_create(vertex_attrs)
 
-	chunks[Vector2i.ZERO] = gen_vertex_array(Vector2.ZERO)
+	chunks[Vector2i.ZERO] = gen_chunk_data(Vector2.ZERO)
 
 	var index_buffer_bytes : PackedByteArray = index_buffer.to_byte_array()
 	p_index_buffer = rd.index_buffer_create(index_buffer.size(), rd.INDEX_BUFFER_FORMAT_UINT32, index_buffer_bytes)
@@ -210,7 +215,7 @@ func update_chunks(cam_pos: Vector3) -> void:
 
 	for chunk in chunks.keys():
 		if chunk.distance_squared_to(cam_chunk) > render_dist * render_dist:
-			rd.free_rid(chunks[chunk])
+			rd.free_rid(chunks[chunk].vertex_buffer)
 			chunks.erase(chunk)
 
 	for x in range(-render_dist, render_dist):
@@ -219,10 +224,10 @@ func update_chunks(cam_pos: Vector3) -> void:
 			if chunk.distance_squared_to(cam_chunk) > render_dist * render_dist or chunks.has(chunk):
 				continue
 			var chunk_pos := chunk as Vector2 * chunk_size
-			chunks[chunk] = gen_vertex_array(chunk_pos)
+			chunks[chunk] = gen_chunk_data(chunk_pos)
 
 
-func gen_vertex_array(chunk_pos: Vector2) -> RID:
+func gen_chunk_data(chunk_pos: Vector2) -> ChunkData:
 	var vertex_buffer := PackedFloat32Array([])
 	var half_length = (side_length - 1) / 2.0
 
@@ -233,9 +238,11 @@ func gen_vertex_array(chunk_pos: Vector2) -> RID:
 			vertex_buffer.append((z - half_length) * mesh_scale + chunk_pos.y)
 
 	var vertex_buffer_bytes : PackedByteArray = vertex_buffer.to_byte_array()
-	p_vertex_buffer = rd.vertex_buffer_create(vertex_buffer_bytes.size(), vertex_buffer_bytes)
+	var data := ChunkData.new()
+	data.vertex_buffer = rd.vertex_buffer_create(vertex_buffer_bytes.size(), vertex_buffer_bytes)
 	var stride := 2
-	return rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, [p_vertex_buffer])
+	data.vertex_array = rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, [data.vertex_buffer])
+	return data
 
 
 func _render_callback(_effect_callback_type : int, render_data : RenderData):
@@ -376,7 +383,7 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 	rd.draw_list_bind_uniform_set(draw_list, p_render_pipeline_uniform_set, 0)
 
 	for chunk in chunks:
-		rd.draw_list_bind_vertex_array(draw_list, chunks[chunk])
+		rd.draw_list_bind_vertex_array(draw_list, chunks[chunk].vertex_array)
 		rd.draw_list_draw(draw_list, true, 1)
 
 	rd.draw_list_end()
@@ -391,11 +398,10 @@ func _notification(what):
 		if p_wire_render_pipeline.is_valid():
 			rd.free_rid(p_wire_render_pipeline)
 		for chunk in chunks:
-			if chunks[chunk].is_valid():
-				rd.free_rid(chunks[chunk])
+			if chunks[chunk].vertex_buffer.is_valid():
+				# Frees vertex_array as well because it depends on vertex_buffer
+				rd.free_rid(chunks[chunk].vertex_buffer)
 		chunks.clear()
-		if p_vertex_buffer.is_valid():
-			rd.free_rid(p_vertex_buffer)
 		if p_index_array.is_valid():
 			rd.free_rid(p_index_array)
 		if p_index_buffer.is_valid():
