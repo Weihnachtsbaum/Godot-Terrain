@@ -99,6 +99,7 @@ var p_wire_index_array : RID
 var p_shader : RID
 var p_wire_shader : RID
 var clear_colors := PackedColorArray([Color.DARK_BLUE])
+var chunk := Vector2i.ZERO
 
 func _init():
 	effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
@@ -131,49 +132,6 @@ func initialize_render(framebuffer_format : int):
 	p_shader = compile_shader(source_vertex, source_fragment)
 	p_wire_shader = compile_shader(source_vertex, source_wire_fragment)
 
-	var vertex_buffer := PackedFloat32Array([])
-	var half_length = (side_length - 1) / 2.0
-
-	# Generate plane vertices on the xz plane
-	for x in side_length:
-		for z in side_length:
-			var xz : Vector2 = Vector2(x - half_length, z - half_length) * mesh_scale
-
-			var pos : Vector3 = Vector3(xz.x, 0, xz.y)
-
-			# Vertex color is not used but left as a demonstration for adding more vertex attributes
-			var color : Vector4 = Vector4(randf(), randf(), randf(), 1)
-
-			# For some reason godot doesn't make it easy to append vectors to arrays
-			for i in 3: vertex_buffer.push_back(pos[i])
-			for i in 4: vertex_buffer.push_back(color[i])
-
-
-	var vertex_count = vertex_buffer.size() / 7
-	print("Vertex Count: " + str(vertex_count))
-
-	# Dump vertex data, I would delete this but it's probably helpful definitely do not uncomment this if your mesh has more than a couple vertices
-	# for i in vertex_count:
-	#     var j = i * 7
-	#     var pos = Vector3()
-
-	#     pos.x = vertex_buffer[j]
-	#     pos.y = vertex_buffer[j + 1]
-	#     pos.z = vertex_buffer[j + 2]
-
-	#     var color = Vector4()
-
-	#     color.x = vertex_buffer[j + 3]
-	#     color.y = vertex_buffer[j + 4]
-	#     color.z = vertex_buffer[j + 5]
-	#     color.w = vertex_buffer[j + 6]
-
-	#     print("Vertex " + str(i) + " ---")
-	#     print("Position: " + str(pos))
-	#     print("Color: " + str(color))
-
-
-
 	var index_buffer := PackedInt32Array([])
 	var wire_index_buffer := PackedInt32Array([])
 
@@ -191,12 +149,6 @@ func initialize_render(framebuffer_format : int):
 			wire_index_buffer.append_array([v0, v1, v0, v3, v1, v3, v1, v2, v2, v3])
 
 	print("Triangle Count: " + str(index_buffer.size() / 3))
-
-	
-	var vertex_buffer_bytes : PackedByteArray = vertex_buffer.to_byte_array()
-	p_vertex_buffer = rd.vertex_buffer_create(vertex_buffer_bytes.size(), vertex_buffer_bytes)
-	
-	var vertex_buffers := [p_vertex_buffer, p_vertex_buffer]
 	
 	var sizeof_float := 4
 	var stride := 7
@@ -215,8 +167,7 @@ func initialize_render(framebuffer_format : int):
 
 	vertex_format = rd.vertex_format_create(vertex_attrs)
 
-
-	p_vertex_array = rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, vertex_buffers)
+	gen_vert(Vector2.ZERO)
 
 	var index_buffer_bytes : PackedByteArray = index_buffer.to_byte_array()
 	p_index_buffer = rd.index_buffer_create(index_buffer.size(), rd.INDEX_BUFFER_FORMAT_UINT32, index_buffer_bytes)
@@ -227,7 +178,6 @@ func initialize_render(framebuffer_format : int):
 	p_index_array = rd.index_array_create(p_index_buffer, 0, index_buffer.size())
 	p_wire_index_array = rd.index_array_create(p_wire_index_buffer, 0, wire_index_buffer.size())
 	
-
 	initialize_render_pipelines(framebuffer_format)
 
 # Initialization of the render pipeline objects is separated from the above code so that we don't have to regenerate everything when the framebuffer format changes
@@ -252,6 +202,42 @@ func initialize_render_pipelines(framebuffer_format : int) -> void:
 	p_render_pipeline = rd.render_pipeline_create(p_shader, framebuffer_format, vertex_format, rd.RENDER_PRIMITIVE_TRIANGLES, raster_state, RDPipelineMultisampleState.new(), depth_state, blend)
 	p_wire_render_pipeline = rd.render_pipeline_create(p_wire_shader, framebuffer_format, vertex_format, rd.RENDER_PRIMITIVE_LINES, raster_state, RDPipelineMultisampleState.new(), depth_state, blend)
 
+
+func update_chunk(cam_pos: Vector3) -> void:
+	var chunk_size := side_length * mesh_scale
+	var current_chunk: Vector2i = Vector2(cam_pos.x / chunk_size, cam_pos.z / chunk_size)
+	if current_chunk == chunk:
+		return
+	chunk = current_chunk
+	var chunk_pos := chunk as Vector2 * chunk_size
+	gen_vert(chunk_pos)
+
+
+func gen_vert(chunk_pos: Vector2) -> void:
+	var vertex_buffer := PackedFloat32Array([])
+	var half_length = (side_length - 1) / 2.0
+
+	# Generate plane vertices on the xz plane
+	for x in side_length:
+		for z in side_length:
+			var xz : Vector2 = Vector2(x - half_length, z - half_length) * mesh_scale + chunk_pos
+
+			var pos : Vector3 = Vector3(xz.x, 0, xz.y)
+
+			# Vertex color is not used but left as a demonstration for adding more vertex attributes
+			var color : Vector4 = Vector4(randf(), randf(), randf(), 1)
+
+			# For some reason godot doesn't make it easy to append vectors to arrays
+			for i in 3: vertex_buffer.push_back(pos[i])
+			for i in 4: vertex_buffer.push_back(color[i])
+
+	var vertex_buffer_bytes : PackedByteArray = vertex_buffer.to_byte_array()
+	p_vertex_buffer = rd.vertex_buffer_create(vertex_buffer_bytes.size(), vertex_buffer_bytes)
+
+	var vertex_buffers := [p_vertex_buffer, p_vertex_buffer]
+	var stride := 7
+
+	p_vertex_array = rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, vertex_buffers)
 
 
 func _render_callback(_effect_callback_type : int, render_data : RenderData):
@@ -304,6 +290,8 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 		light_direction = light.transform.basis.z.normalized()
 
 	var cam_pos := render_scene_data.get_cam_transform().origin
+
+	update_chunk(cam_pos)
 
 	# Store all shader uniforms in a gpu data buffer, this isn't exactly the optimal data layout, each 1.0 push back is wasted space
 	buffer.push_back(cam_pos.x)
