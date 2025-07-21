@@ -202,7 +202,7 @@ func initialize_render_pipelines(framebuffer_format : int) -> void:
 
 
 func update_chunks(cam_pos: Vector3) -> void:
-	var chunk_size := side_length * mesh_scale
+	var chunk_size := (side_length - 1) * mesh_scale
 	var current_cam_chunk: Vector2i = Vector2(cam_pos.x / chunk_size, cam_pos.z / chunk_size)
 	if current_cam_chunk == cam_chunk:
 		return
