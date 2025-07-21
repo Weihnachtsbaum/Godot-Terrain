@@ -153,19 +153,15 @@ func initialize_render(framebuffer_format : int):
 	print("Triangle Count: " + str(index_buffer.size() / 3))
 	
 	var sizeof_float := 4
-	var stride := 7
+	var stride := 2
 	
 	# The GPU needs to know the memory layout of the vertex data, in this case each vertex has a position (3 component vector) and a color (4 component vector)
-	var vertex_attrs = [RDVertexAttribute.new(), RDVertexAttribute.new()]
-	vertex_attrs[0].format = rd.DATA_FORMAT_R32G32B32_SFLOAT
+	var vertex_attrs = [RDVertexAttribute.new()]
+	vertex_attrs[0].format = rd.DATA_FORMAT_R32G32_SFLOAT
 	vertex_attrs[0].location = 0
 	vertex_attrs[0].offset = 0
 	vertex_attrs[0].stride = stride * sizeof_float
 
-	vertex_attrs[1].format = rd.DATA_FORMAT_R32G32B32A32_SFLOAT
-	vertex_attrs[1].location = 1
-	vertex_attrs[1].offset = 3 * sizeof_float
-	vertex_attrs[1].stride = stride * sizeof_float
 
 	vertex_format = rd.vertex_format_create(vertex_attrs)
 
@@ -233,24 +229,13 @@ func gen_vertex_array(chunk_pos: Vector2) -> RID:
 	# Generate plane vertices on the xz plane
 	for x in side_length:
 		for z in side_length:
-			var xz : Vector2 = Vector2(x - half_length, z - half_length) * mesh_scale + chunk_pos
-
-			var pos : Vector3 = Vector3(xz.x, 0, xz.y)
-
-			# Vertex color is not used but left as a demonstration for adding more vertex attributes
-			var color : Vector4 = Vector4(randf(), randf(), randf(), 1)
-
-			# For some reason godot doesn't make it easy to append vectors to arrays
-			for i in 3: vertex_buffer.push_back(pos[i])
-			for i in 4: vertex_buffer.push_back(color[i])
+			vertex_buffer.append((x - half_length) * mesh_scale + chunk_pos.x)
+			vertex_buffer.append((z - half_length) * mesh_scale + chunk_pos.y)
 
 	var vertex_buffer_bytes : PackedByteArray = vertex_buffer.to_byte_array()
 	p_vertex_buffer = rd.vertex_buffer_create(vertex_buffer_bytes.size(), vertex_buffer_bytes)
-
-	var vertex_buffers := [p_vertex_buffer, p_vertex_buffer]
-	var stride := 7
-
-	return rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, vertex_buffers)
+	var stride := 2
+	return rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, [p_vertex_buffer])
 
 
 func _render_callback(_effect_callback_type : int, render_data : RenderData):
@@ -454,12 +439,10 @@ const source_vertex = "
 		};
 		
 		// This is the vertex data layout that we defined in initialize_render after line 198
-		layout(location = 0) in vec3 a_Position;
-		layout(location = 1) in vec4 a_Color;
+		layout(location = 0) in vec2 a_Position;
 
 		// This is what the vertex shader will output and send to the fragment shader.
-		layout(location = 2) out vec4 v_Color;
-		layout(location = 3) out vec3 pos;
+		layout(location = 1) out vec3 pos;
 
 		#define PI 3.141592653589793238462
 		
@@ -595,23 +578,22 @@ const source_vertex = "
 		}
 		
 		void main() {
-			// Passes the vertex color over to the fragment shader, even though we don't use it but you can use it if you want I guess
-			v_Color = a_Color;
-
-			// The fragment shader also calculates the fractional brownian motion for pixel perfect normal vectors and lighting, so we pass the vertex position to the fragment shader
-			pos = a_Position;
-
 			// Initial noise sample position offset and scaled by uniform variables
-			vec3 noise_pos = (pos + vec3(_Offset.x, 0, _Offset.z)) / _Scale;
+			vec2 noise_pos = (a_Position + vec2(_Offset.x, _Offset.z)) / _Scale;
 
 			// The fractional brownian motion
-			vec3 n = fbm(noise_pos.xz);
+			vec3 n = fbm(noise_pos);
+
+			vec3 pos3 = vec3(a_Position.x, 0, a_Position.y);
 
 			// Adjust height of the vertex by fbm result scaled by final desired amplitude
-			pos.y += _TerrainHeight * n.x + _TerrainHeight - _Offset.y;
+			pos3.y += _TerrainHeight * n.x + _TerrainHeight - _Offset.y;
 			
+			// The fragment shader also calculates the fractional brownian motion for pixel perfect normal vectors and lighting, so we pass the vertex position to the fragment shader
+			pos = pos3;
+
 			// Multiply final vertex position with model/view/projection matrices to convert to clip space
-			gl_Position = MVP * vec4(pos, 1);
+			gl_Position = MVP * vec4(pos3, 1);
 		}
 		"
 
@@ -648,8 +630,7 @@ const source_fragment = "
 		};
 		
 		// These are the variables that we expect to receive from the vertex shader
-		layout(location = 2) in vec4 a_Color;
-		layout(location = 3) in vec3 pos;
+		layout(location = 1) in vec3 pos;
 		
 		// This is what the fragment shader will output, usually just a pixel color
 		layout(location = 0) out vec4 frag_color;
@@ -855,8 +836,6 @@ const source_wire_fragment = "
 			float _SlopeDamping;
 			vec4 _AmbientLight;
 		};
-		
-		layout(location = 2) in vec4 a_Color;
 		
 		layout(location = 0) out vec4 frag_color;
 		
