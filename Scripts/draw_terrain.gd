@@ -5,6 +5,8 @@ class_name DrawTerrainMesh extends CompositorEffect
 ## Regenerate mesh data and recompile shaders TODO: Separate mesh generation and shader recompilation
 @export var regenerate : bool = true
 
+@export var render_dist := 2
+
 @export_group("Mesh Settings")
 ## Number of vertices in the plane mesh, quad count per row is thus  [code]side_length - 1[/code]
 @export_range(2, 1000, 1, "or_greater") var side_length : int = 200
@@ -91,7 +93,6 @@ var p_render_pipeline_uniform_set : RID
 var p_wire_render_pipeline : RID
 var p_vertex_buffer : RID
 var vertex_format : int
-var p_vertex_array : RID
 var p_index_buffer : RID
 var p_index_array : RID
 var p_wire_index_buffer : RID
@@ -99,7 +100,8 @@ var p_wire_index_array : RID
 var p_shader : RID
 var p_wire_shader : RID
 var clear_colors := PackedColorArray([Color.DARK_BLUE])
-var chunk := Vector2i.ZERO
+var chunks: Dictionary[Vector2i, RID]
+var cam_chunk := Vector2i.ZERO
 
 func _init():
 	effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
@@ -167,7 +169,7 @@ func initialize_render(framebuffer_format : int):
 
 	vertex_format = rd.vertex_format_create(vertex_attrs)
 
-	gen_vert(Vector2.ZERO)
+	chunks[Vector2i.ZERO] = gen_vertex_array(Vector2.ZERO)
 
 	var index_buffer_bytes : PackedByteArray = index_buffer.to_byte_array()
 	p_index_buffer = rd.index_buffer_create(index_buffer.size(), rd.INDEX_BUFFER_FORMAT_UINT32, index_buffer_bytes)
@@ -203,17 +205,28 @@ func initialize_render_pipelines(framebuffer_format : int) -> void:
 	p_wire_render_pipeline = rd.render_pipeline_create(p_wire_shader, framebuffer_format, vertex_format, rd.RENDER_PRIMITIVE_LINES, raster_state, RDPipelineMultisampleState.new(), depth_state, blend)
 
 
-func update_chunk(cam_pos: Vector3) -> void:
+func update_chunks(cam_pos: Vector3) -> void:
 	var chunk_size := side_length * mesh_scale
-	var current_chunk: Vector2i = Vector2(cam_pos.x / chunk_size, cam_pos.z / chunk_size)
-	if current_chunk == chunk:
+	var current_cam_chunk: Vector2i = Vector2(cam_pos.x / chunk_size, cam_pos.z / chunk_size)
+	if current_cam_chunk == cam_chunk:
 		return
-	chunk = current_chunk
-	var chunk_pos := chunk as Vector2 * chunk_size
-	gen_vert(chunk_pos)
+	cam_chunk = current_cam_chunk
+
+	for chunk in chunks.keys():
+		if chunk.distance_squared_to(cam_chunk) > render_dist * render_dist:
+			rd.free_rid(chunks[chunk])
+			chunks.erase(chunk)
+
+	for x in range(-render_dist, render_dist):
+		for z in range(-render_dist, render_dist):
+			var chunk := Vector2i(x, z) + cam_chunk
+			if chunk.distance_squared_to(cam_chunk) > render_dist * render_dist or chunks.has(chunk):
+				continue
+			var chunk_pos := chunk as Vector2 * chunk_size
+			chunks[chunk] = gen_vertex_array(chunk_pos)
 
 
-func gen_vert(chunk_pos: Vector2) -> void:
+func gen_vertex_array(chunk_pos: Vector2) -> RID:
 	var vertex_buffer := PackedFloat32Array([])
 	var half_length = (side_length - 1) / 2.0
 
@@ -237,7 +250,7 @@ func gen_vert(chunk_pos: Vector2) -> void:
 	var vertex_buffers := [p_vertex_buffer, p_vertex_buffer]
 	var stride := 7
 
-	p_vertex_array = rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, vertex_buffers)
+	return rd.vertex_array_create(vertex_buffer.size() / stride, vertex_format, vertex_buffers)
 
 
 func _render_callback(_effect_callback_type : int, render_data : RenderData):
@@ -291,7 +304,7 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 
 	var cam_pos := render_scene_data.get_cam_transform().origin
 
-	update_chunk(cam_pos)
+	update_chunks(cam_pos)
 
 	# Store all shader uniforms in a gpu data buffer, this isn't exactly the optimal data layout, each 1.0 push back is wasted space
 	buffer.push_back(cam_pos.x)
@@ -369,8 +382,6 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 		rd.draw_list_bind_render_pipeline(draw_list, p_wire_render_pipeline)
 	else:
 		rd.draw_list_bind_render_pipeline(draw_list, p_render_pipeline)
-		
-	rd.draw_list_bind_vertex_array(draw_list, p_vertex_array)
 
 	if wireframe:
 		rd.draw_list_bind_index_array(draw_list, p_wire_index_array)
@@ -378,7 +389,11 @@ func _render_callback(_effect_callback_type : int, render_data : RenderData):
 		rd.draw_list_bind_index_array(draw_list, p_index_array)
 
 	rd.draw_list_bind_uniform_set(draw_list, p_render_pipeline_uniform_set, 0)
-	rd.draw_list_draw(draw_list, true, 1)
+
+	for chunk in chunks:
+		rd.draw_list_bind_vertex_array(draw_list, chunks[chunk])
+		rd.draw_list_draw(draw_list, true, 1)
+
 	rd.draw_list_end()
 
 	rd.draw_command_end_label()
@@ -390,8 +405,10 @@ func _notification(what):
 			rd.free_rid(p_render_pipeline)
 		if p_wire_render_pipeline.is_valid():
 			rd.free_rid(p_wire_render_pipeline)
-		if p_vertex_array.is_valid():
-			rd.free_rid(p_vertex_array)
+		for chunk in chunks:
+			if chunks[chunk].is_valid():
+				rd.free_rid(chunks[chunk])
+		chunks.clear()
 		if p_vertex_buffer.is_valid():
 			rd.free_rid(p_vertex_buffer)
 		if p_index_array.is_valid():
